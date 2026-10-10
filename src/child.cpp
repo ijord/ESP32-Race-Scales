@@ -3,6 +3,7 @@ traviscea DIY Race Scales – Version 1.0
 Copyright (c) 2026 Travis Way
 */
 
+#include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <Preferences.h>
@@ -14,7 +15,7 @@ Copyright (c) 2026 Travis Way
 /* ---------- HX711 PINS ---------- */
 #define HX_DT 4
 #define HX_SCK 5
-#define BAT_PIN 34
+#define BAT_PIN 1 // ESP32-S3 ADC1; connect the battery divider to GPIO 1.
 
 HX711 scale;
 Preferences prefs;
@@ -38,11 +39,11 @@ Example, if your brain/main esp32 outputs: AP MAC: 4E:DD:76:6F:A5:45
 then your masterAddress =
 uint8_t masterAddress[] = {0x4E,0xDD,0x76,0x6F,0xA5,0x45};
 */
-uint8_t masterAddress[] = {};
+uint8_t masterAddress[6] = {}; // Set to the parent AP MAC before uploading.
 
 
 //* ---------- SEND CALLBACK ---------- */
-void onSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
+void onSent(const uint8_t *mac, esp_now_send_status_t status) {
   Serial.print("Send Status: ");
   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
 }

@@ -108,17 +108,52 @@ SCK → GPIO 5
 ---
 
 
-## Loading of Code notes
+## Build and Upload with PlatformIO
 
-If you see something like ```diy_race_scale_parent_esp32.ino:12:10: fatal error: HX711.h: No such file or directory```
+Install PlatformIO IDE in VS Code (or PlatformIO Core), then open this repository folder.
+The HX711 dependency is installed automatically.
 
-Open Arduino IDE.
+- `src/parent.cpp`: parent/master firmware, including the FL scale and web interface.
+- `src/child.cpp`: remote pad firmware. Set `PAD_ID` to `FR`, `RL`, or `RR` and
+  set the six bytes in `masterAddress` to the parent's printed **AP MAC** before uploading.
 
-Go to Sketch > Include Library > Manage Libraries....
+Build the parent (the default environment):
 
-Search for "HX711" in the search bar.
+```sh
+pio run -e S3-Mini
+```
 
-Select the "HX711 Arduino Library" by Bogdan Necula (this is the most widely used and recommended version) and click Install
+Build a child pad:
+
+```sh
+pio run -e S3-Mini-child
+```
+
+Upload and open the serial monitor (substitute `S3-Mini-child` for a child pad):
+
+```sh
+pio run -e S3-Mini -t upload
+pio device monitor -e S3-Mini
+```
+
+If the board does not enter download mode, hold BOOT, press and release RESET,
+then release BOOT and retry the upload. Set `upload_port` and `monitor_port` in
+`platformio.ini` if automatic port selection picks the wrong device.
+
+### ESP32-S3 Super Mini settings
+
+`platformio.ini` pins Espressif32 6.12.0 (Arduino-ESP32 2.0.17) and uses the generic
+ESP32-S3 board definition with native USB serial enabled. The ESP-NOW callback
+signatures in both sources match that framework.
+
+The exact Super Mini hardware revision is unknown, so the configuration assumes
+**at least 4 MB flash** and does not enable PSRAM. It overrides the DevKitC's
+8 MB default with a 4 MB flash size and partition table. Confirm your board's
+flash capacity before uploading; larger-flash boards can use this 4 MB layout.
+
+HX711 DT and SCK remain on **GPIO 4** and **GPIO 5**. The child battery divider
+input is now **GPIO 1 (ADC1)**: the original ESP32's GPIO 34 is not an ADC input
+on the S3. Update battery wiring to GPIO 1 if using battery monitoring.
 
 ---
 

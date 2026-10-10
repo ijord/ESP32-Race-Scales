@@ -4,7 +4,7 @@ Copyright (c) 2026 Travis Way
 */
 
 
-#define ARDUINO_USB_CDC_ON_BOOT 1
+#include <Arduino.h>
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -883,7 +883,7 @@ void handleCalibrate(){
 }
 
 
-void onReceive(const esp_now_recv_info *info, const uint8_t *data, int len){
+void onReceive(const uint8_t *mac, const uint8_t *data, int len){
 
   if(len != sizeof(ScaleData)){
     Serial.println("BAD PACKET SIZE");
