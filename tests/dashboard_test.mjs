@@ -42,6 +42,7 @@ assert.equal(elements.node_list.children[0].children[5].textContent,'59.9');
 assert.equal(elements.node_list.children[1].children[4].textContent,'—');
 assert.equal(elements.node_list.children[1].children[1].textContent,'unknown');
 assert.equal(elements.lf_batt.textContent,'Battery: --'); // Older firmware has no battery telemetry.
+assert.equal(elements.lf_pct.textContent,'--');
 data.nodes[0].battery_voltage=4.18;
 data.nodes[1].battery_voltage=3.72;
 render(data);
@@ -49,23 +50,50 @@ assert.equal(elements.lf_batt.textContent,'Battery: 4.18 V');
 assert.equal(elements.rf_batt.textContent,'Battery: 3.72 V');
 assert.equal(elements.lr_batt.textContent,'Battery: --');
 assert.equal(elements.rr_batt.textContent,'Battery: --');
+assert.equal(elements.lf_pct.textContent,'~98%');
+assert.equal(elements.rf_pct.textContent,'~0%');
+assert.equal(elements.lr_pct.textContent,'--');
+assert.equal(elements.rr_pct.textContent,'--');
+for(const [voltage,expected] of [[3.73,0],[3.8,20],[3.85,35],[3.9,50],[4,75],[4.1,90],[4.2,100],[4.3,100]]){
+  data.nodes[0].battery_voltage=voltage;render(data);
+  assert.equal(elements.lf_pct.textContent,'~'+expected+'%');
+}
+let previous=-1;
+for(let mv=3600;mv<=4500;mv++){
+  const percent=context.batteryPercent(mv/1000);
+  assert.ok(percent>=previous && percent>=0 && percent<=100);
+  previous=percent;
+}
+data.nodes[0].battery_voltage=5;render(data);
+assert.equal(elements.lf_batt.textContent,'Battery: 5.00 V');
+assert.equal(elements.lf_pct.textContent,'USB power');
+for(const voltage of [null,undefined,NaN,Infinity]){
+  data.nodes[0].battery_voltage=voltage;render(data);
+  assert.equal(elements.lf_pct.textContent,'--');
+}
+data.nodes[0].battery_voltage=4.18;
 data.nodes[0].ready=false;data.nodes[0].calibrated=false;render(data);
 assert.equal(elements.lf_batt.textContent,'Battery: 4.18 V'); // Battery does not depend on the HX711.
 data.nodes[0].online=false;render(data);
 assert.equal(elements.lf_batt.textContent,'Battery: --');
+assert.equal(elements.lf_pct.textContent,'--');
 data.nodes[0].online=true;data.nodes[0].ready=true;data.nodes[0].calibrated=true;
 data.nodes[1].corner=1;render(data);
 assert.equal(elements.lf_batt.textContent,'Battery: --'); // Do not pick an arbitrary duplicate corner.
+assert.equal(elements.lf_pct.textContent,'--');
 data.nodes[1].corner=2;
 data.nodes.push({corner:3,online:true,battery_voltage:3.95},{corner:4,online:true,battery_voltage:0});
 render(data);
 assert.equal(elements.lr_batt.textContent,'Battery: 3.95 V');
 assert.equal(elements.rr_batt.textContent,'Battery: 0.00 V');
+assert.equal(elements.lr_pct.textContent,'~63%');
+assert.equal(elements.rr_pct.textContent,'~0%');
 data.nodes.splice(2);
 context.toggleUnits();
 assert.equal(digits('lf'),'-5.7');
 assert.equal(elements.node_list.children[0].children[4].textContent,'-2978.173096'); // Counts/lb stays explicit.
 assert.equal(elements.node_list.children[0].children[5].textContent,'59.9'); // Zero offset remains in pounds.
+assert.equal(elements.lf_pct.textContent,'~98%'); // Battery percentage is independent of weighing units.
 data.nodes[0].calibration=0;render(data);
 assert.equal(elements.node_list.children[0].children[5].textContent,'—');
 data.nodes[0].calibration=2978.173096;render(data);
@@ -76,6 +104,8 @@ assert.equal(digits('lf'),'--');
 assert.equal(elements.total.innerText,'--');
 assert.equal(elements.lf_batt.textContent,'Battery: --');
 assert.equal(elements.rf_batt.textContent,'Battery: --');
+assert.equal(elements.lf_pct.textContent,'--');
+assert.equal(elements.rf_pct.textContent,'--');
 
 const uploadHtml=await readFile(new URL('../src/member_update.h',import.meta.url),'utf8');
 const uploadElements=Object.fromEntries(['upload','file','submit','status','progress'].map(id=>[id,new Element()]));

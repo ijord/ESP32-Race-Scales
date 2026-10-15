@@ -178,7 +178,7 @@ uses the ESP32 Update library to write and validate the inactive slot before
 selecting it for reboot. Stored calibration, corner, kit and Wi-Fi settings are
 retained. Diagnostics shows the firmware build time and current application slot.
 The firmware version is defined in `include/firmware_version.h` (currently
-`1.2.7`) and appears in live data, the scale list, settings and diagnostics.
+`1.2.9`) and appears in live data, the scale list, settings and diagnostics.
 Beacons/readings carry it in a field unused by older reading packets, preserving
 the 64-byte radio format and protocol version. Older boards display `unknown`
 until updated. Firmware version and radio protocol version are separate values.
@@ -302,14 +302,25 @@ fields require firmware 1.2.0 on that scale; older readings display `—`. Updat
 gateway to 1.2.0 to get the new table. Telemetry uses unused reading fields and a
 metadata marker, keeping the 64-byte radio packet compatible with older firmware.
 
-Firmware 1.2.6 reads only **GPIO3**, averaging eight calibrated ADC readings once
-per second. Battery voltage is **2 × GPIO3 voltage + 0.97 V**, using the measured
-correction supplied for these scales. Each corner shows **Battery: x.xx V** below
+Firmware 1.2.8 reads only **GPIO3**, averaging eight calibrated ADC readings once
+per second. First calculate **VBUS = 2 × GPIO3 voltage**. If VBUS is **4.5 V or
+lower**, add the measured **0.97 V** correction; above 4.5 V, display VBUS without
+the correction because USB bypasses the battery diode. Each corner shows **Battery: x.xx V** below
 its color bar. The API field is `battery_voltage`; GPIO1 is no longer sampled.
 Offline scales, duplicate corner assignments and older firmware without this
 corrected GPIO3 reading show `Battery: --`. Update the gateway first, then each
-scale to 1.2.6. The constant correction is applied even when USB is connected;
-on this board GPIO3 senses VBUS, so USB supply readings do not measure the battery.
+scale to 1.2.8. On USB power, the displayed value is the USB supply voltage rather
+than the cell's charging voltage; GPIO3 senses VBUS.
+The dashboard also estimates usable battery percentage below the voltage, entirely
+in the browser. A piecewise-linear approximation of a Li-ion discharge curve uses
+these voltage/percentage points: **3.73/0, 3.80/20, 3.90/50, 4.00/75, 4.10/90,
+4.20/100**. This is a heuristic for the scale's usable range, not a measured profile
+of these cells or a fuel-gauge measurement. Values clamp to 0–100%, with `~` marking
+the estimate. Missing/offline/duplicate scales show `--`; readings above 4.5 V show
+`USB power` instead of a percentage. Only the gateway needs firmware 1.2.9 for this
+display, provided members already report battery voltage. Radio packets are unchanged.
+See [Adafruit's Li-ion/LiPo voltage profile](https://learn.adafruit.com/li-ion-and-lipoly-batteries/voltages)
+for the general discharge shape; the 3.73 V usable cutoff is specific to this kit.
 The ADC uses 11 dB attenuation (see
 [Espressif ADC documentation](https://docs.espressif.com/projects/arduino-esp32/en/latest/api/adc.html)).
 

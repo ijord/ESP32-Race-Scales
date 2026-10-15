@@ -141,7 +141,7 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
     gap:6px;
     min-height:34px;
     position:relative;
-    margin-top: 60px;
+    margin-top: 76px;
   }
 
   .panel{
@@ -320,7 +320,7 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
   .lr .value,
   .rr .value{
     margin-top:0px;
-    margin-bottom:60px;
+    margin-bottom:76px;
   }
 
   </style>
@@ -340,7 +340,7 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
 
   <div class="weight lf">
     <div class="top">
-      <span class="corner-name" title="Red scale">LF<span class="corner-color"></span><span class="battery" id="lf_batt">Battery: --</span></span>
+      <span class="corner-name" title="Red scale">LF<span class="corner-color"></span><span class="battery" id="lf_batt">Battery: --</span><span class="battery" id="lf_pct" title="Estimated usable charge: 3.73 V empty, 4.20 V full">--</span></span>
       <span class="status" id="lf_status"></span>
     </div>
     <div class="value">
@@ -351,7 +351,7 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
 
   <div class="weight rf">
     <div class="top">
-      <span class="corner-name" title="Green scale">RF<span class="corner-color"></span><span class="battery" id="rf_batt">Battery: --</span></span>
+      <span class="corner-name" title="Green scale">RF<span class="corner-color"></span><span class="battery" id="rf_batt">Battery: --</span><span class="battery" id="rf_pct" title="Estimated usable charge: 3.73 V empty, 4.20 V full">--</span></span>
       <span class="status" id="rf_status"></span>
       </div>
       <div class="value">
@@ -362,7 +362,7 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
 
   <div class="weight lr">
     <div class="top">
-      <span class="corner-name" title="White scale">LR<span class="corner-color"></span><span class="battery" id="lr_batt">Battery: --</span></span>
+      <span class="corner-name" title="White scale">LR<span class="corner-color"></span><span class="battery" id="lr_batt">Battery: --</span><span class="battery" id="lr_pct" title="Estimated usable charge: 3.73 V empty, 4.20 V full">--</span></span>
       <span class="status" id="lr_status"></span>
       </div>
       <div class="value">
@@ -373,7 +373,7 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
 
   <div class="weight rr">
     <div class="top">
-      <span class="corner-name" title="Black scale">RR<span class="corner-color"></span><span class="battery" id="rr_batt">Battery: --</span></span>
+      <span class="corner-name" title="Black scale">RR<span class="corner-color"></span><span class="battery" id="rr_batt">Battery: --</span><span class="battery" id="rr_pct" title="Estimated usable charge: 3.73 V empty, 4.20 V full">--</span></span>
       <span class="status" id="rr_status"></span>
       </div>
       <div class="value">
@@ -603,9 +603,24 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
 
   }
 
+  function batteryPercent(voltage){
+    if(!Number.isFinite(voltage))return null
+    // Approximate Li-ion discharge shape, rescaled to this kit's usable voltage window.
+    const curve=[[3.73,0],[3.80,20],[3.90,50],[4.00,75],[4.10,90],[4.20,100]]
+    if(voltage<=curve[0][0])return 0
+    for(let i=1;i<curve.length;i++){
+      const [v0,p0]=curve[i-1], [v1,p1]=curve[i]
+      if(voltage<=v1)return Math.round(p0+(voltage-v0)*(p1-p0)/(v1-v0))
+    }
+    return 100
+  }
+
   function renderVoltages(id,node){
+    const voltage=node?.battery_voltage,percent=batteryPercent(voltage)
     const volts=value=>Number.isFinite(value) ? value.toFixed(2)+' V' : '--'
-    document.getElementById(id).textContent='Battery: '+volts(node?.battery_voltage)
+    document.getElementById(id).textContent='Battery: '+volts(voltage)
+    document.getElementById(id.replace('_batt','_pct')).textContent=
+      percent===null ? '--' : voltage>4.5 ? 'USB power' : '~'+percent+'%'
   }
 
   function setStatus(id,online){

@@ -197,8 +197,9 @@ void updateBatteryVoltage() {
   if (sampled && now - sampledAt < 1000) return;
   uint32_t sum = 0;
   for (unsigned i = 0; i < 8; ++i) sum += analogReadMilliVolts(BATTERY_PIN);
-  // Undo the 2:1 divider, then apply the measured +0.97 V correction.
-  batteryMillivolts = (sum * 2 + 4) / 8 + 970;
+  // Undo the 2:1 divider. Above 4.5 V, VBUS is USB-powered and bypasses the diode.
+  batteryMillivolts = (sum * 2 + 4) / 8;
+  if (batteryMillivolts <= 4500) batteryMillivolts += 970;
   sampledAt = now;
   sampled = true;
 }
