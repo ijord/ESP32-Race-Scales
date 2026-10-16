@@ -113,7 +113,8 @@ struct Message {
   Result result;
   union {
     uint32_t requesterBoot; // ACKs.
-    uint32_t batteryMillivolts; // v2: GPIO1 x2; v4: GPIO3 x2 + 970 mV.
+    uint32_t batteryMillivolts; // v2: GPIO1 x2; v4: corrected GPIO3 x2 battery voltage.
+    uint32_t ledPhaseMs; // Beacon metadata v1: gateway LED phase at transmission.
     struct {
       uint16_t pin1, pin3; // Reading metadata v3, both multiplied by two.
     } voltageMillivolts;
@@ -135,6 +136,7 @@ struct Message {
   union {
     Corner configCorner;
     uint8_t readingMetadataVersion; // 1 = calibration; 2/3 = legacy voltage; 4 = corrected GPIO3 battery.
+    uint8_t beaconMetadataVersion; // 1 = LED sync; 2 = LED sync and short hotspot name; legacy uses 0.
   };
   Preference configPreference;
 };
@@ -154,6 +156,9 @@ inline bool decode(const uint8_t *bytes, size_t length, Message &message) {
       !std::isfinite(message.battery) || !std::isfinite(message.knownWeight))
     return false;
   if (message.kind == Kind::Beacon || message.kind == Kind::Reading) {
+    if (message.kind == Kind::Beacon &&
+        (message.beaconMetadataVersion == 1 || message.beaconMetadataVersion == 2) && message.ledPhaseMs >= 1000)
+      return false;
     // Keep the version safe to include in JSON while accepting legacy empty versions.
     bool terminated = false;
     for (char c : message.firmwareVersion) {

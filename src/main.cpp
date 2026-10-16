@@ -15,16 +15,21 @@ Copyright (c) 2026 Travis Way
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <esp_ota_ops.h>
+#include <esp_timer.h>
 #include <atomic>
 #include <memory>
 #include <freertos/timers.h>
 #include "scale_network.h"
+#include "gateway_advertisement.h"
+#include "led_clock.h"
+#include "wifi_credentials.h"
 #include "firmware_version.h"
 #include "dashboard.h"
 #include "diagnostics.h"
 #include "live_updates.h"
 #include "member_update.h"
 #include "kit_update.h"
+#include "kit_wifi.h"
 
 using namespace scales;
 
@@ -32,7 +37,7 @@ constexpr int HX_DT = 12, HX_SCK = 13, BOOT_PIN = 0;
 constexpr int BATTERY_PIN = 3;
 constexpr int STATUS_RGB_PIN = 48;
 constexpr uint32_t NodeTimeoutMs = 3000;
-const char *AP_PASSWORD = "12345678";
+const char *AP_PASSWORD = ""; // Open kit hotspot; members use the same empty password.
 const uint8_t Broadcast[6] = {255, 255, 255, 255, 255, 255};
 const char *CornerNames[] = {"Unassigned", "LF", "RF", "LR", "RR"};
 const char *PreferenceNames[] = {"Auto", "Prefer gateway", "Scale only"};
@@ -58,6 +63,9 @@ uint32_t lastSample = 0, lastNetworkSend = 0, lastHomeRetry = 0, lastScan = 0;
 uint32_t scanStartedAt = 0;
 bool scanRunning = false, wasHomeConnected = false;
 std::atomic<bool> ledGateway{false};
+LedClock ledClock;
+enum class BatteryLed : uint8_t { Off, Charging, Low };
+std::atomic<BatteryLed> ledBattery{BatteryLed::Off};
 uint32_t receivedFrames = 0, rejectedFrames = 0;
 esp_err_t lastSendError = ESP_OK;
 bool mdnsActive = false;
@@ -82,6 +90,8 @@ Node nodes[4]; // Slot zero always belongs to this physical scale.
 struct Frame {
   uint8_t mac[6];
   Message message;
+  uint16_t receivedLedPhase = 0;
+  bool advertisement = false;
 };
 QueueHandle_t receiveQueue, transmitQueue;
 std::atomic<bool> transmitBusy{false};
@@ -149,6 +159,7 @@ Message message(Kind kind) {
   if (!m.channel) m.channel = 1;
   if (kind == Kind::Beacon || kind == Kind::Reading)
     memcpy(m.firmwareVersion, SCALE_FIRMWARE_VERSION, sizeof(SCALE_FIRMWARE_VERSION));
+  if (kind == Kind::Beacon) m.beaconMetadataVersion = 2;
   return m;
 }
 
@@ -162,6 +173,7 @@ bool enqueue(uint64_t target, const Message &m) {
 void onReceive(const uint8_t *mac, const uint8_t *bytes, int length) {
   if (length != sizeof(Message) || (mac[0] & 1)) return;
   Frame frame;
+  frame.receivedLedPhase = (esp_timer_get_time() / 1000) % 1000;
   memcpy(frame.mac, mac, 6);
   memcpy(&frame.message, bytes, sizeof(frame.message));
   xQueueSend(receiveQueue, &frame, 0);
@@ -170,6 +182,19 @@ void onReceive(const uint8_t *mac, const uint8_t *bytes, int length) {
 void onSent(const uint8_t *, esp_now_send_status_t status) {
   lastDeliveryStatus.store(status);
   transmitBusy.store(false);
+}
+
+void onGatewayAdvertisement(void *, wifi_vendor_ie_type_t type, const uint8_t *,
+                            const vendor_ie_data_t *data, int) {
+  if (type != WIFI_VND_IE_TYPE_BEACON && type != WIFI_VND_IE_TYPE_PROBE_RESP) return;
+  GatewayAdvertisement advertisement;
+  if (!decodeGatewayAdvertisement(reinterpret_cast<const uint8_t *>(data), data->length + 2,
+                                  advertisement)) return;
+  Frame frame;
+  memcpy(frame.mac, advertisement.stationMac, sizeof(frame.mac));
+  frame.message = advertisement.message;
+  frame.advertisement = true;
+  xQueueSend(receiveQueue, &frame, 0);
 }
 
 void processTransmits() {
@@ -185,9 +210,50 @@ void processTransmits() {
     if (lastSendError != ESP_OK) return;
   }
   transmitBusy.store(true);
+  // Stamp at actual dispatch, so time spent waiting in the queue does not skew LEDs.
+  if (frame.message.kind == Kind::Beacon)
+    frame.message.ledPhaseMs = ledClock.phase(esp_timer_get_time() / 1000);
   lastSendError = esp_now_send(frame.mac, reinterpret_cast<uint8_t *>(&frame.message),
                               sizeof(frame.message));
   if (lastSendError != ESP_OK) transmitBusy.store(false);
+}
+
+bool makeHomeCredentials(const String &ssid, const String &password, HomeCredentials &credentials) {
+  if (ssid.length() > 32 || password.length() > 64 ||
+      ssid.length() != std::strlen(ssid.c_str()) || password.length() != std::strlen(password.c_str())) return false;
+  credentials = HomeCredentials{};
+  std::memcpy(credentials.ssid, ssid.c_str(), ssid.length());
+  std::memcpy(credentials.password, password.c_str(), password.length());
+  return validHomeCredentials(credentials);
+}
+
+bool storeHomeCredentials(const HomeCredentials &credentials) {
+  // One NVS blob commits the SSID/password pair together, including open networks.
+  if (!validHomeCredentials(credentials) ||
+      prefs.putBytes("home_wifi", &credentials, sizeof(credentials)) != sizeof(credentials)) return false;
+  homeSsid = credentials.ssid;
+  homePassword = credentials.password;
+  return true;
+}
+
+void loadHomeCredentials() {
+  HomeCredentials credentials;
+  if (prefs.isKey("home_wifi") && prefs.getBytesLength("home_wifi") == sizeof(credentials) &&
+      prefs.getBytes("home_wifi", &credentials, sizeof(credentials)) == sizeof(credentials) &&
+      validHomeCredentials(credentials)) {
+    homeSsid = credentials.ssid; homePassword = credentials.password;
+    return;
+  }
+  homeSsid = prefs.getString("ssid", ""); homePassword = prefs.getString("password", "");
+  if (!prefs.isKey("ssid")) {
+    wifi_config_t saved{};
+    if (esp_wifi_get_config(WIFI_IF_STA, &saved) == ESP_OK && saved.sta.ssid[0]) {
+      credentials = HomeCredentials{};
+      std::memcpy(credentials.ssid, saved.sta.ssid, 32);
+      std::memcpy(credentials.password, saved.sta.password, 64);
+      if (validHomeCredentials(credentials)) storeHomeCredentials(credentials);
+    }
+  }
 }
 
 void updateBatteryVoltage() {
@@ -199,7 +265,10 @@ void updateBatteryVoltage() {
   for (unsigned i = 0; i < 8; ++i) sum += analogReadMilliVolts(BATTERY_PIN);
   // Undo the 2:1 divider. Above 4.5 V, VBUS is USB-powered and bypasses the diode.
   batteryMillivolts = (sum * 2 + 4) / 8;
-  if (batteryMillivolts <= 4500) batteryMillivolts += 970;
+  if (batteryMillivolts <= 4500) batteryMillivolts += 880;
+  // The dashboard's usable-charge curve reaches 20% at 3.80 V.
+  ledBattery.store(batteryMillivolts > 4500 ? BatteryLed::Charging :
+                   batteryMillivolts < 3800 ? BatteryLed::Low : BatteryLed::Off);
   sampledAt = now;
   sampled = true;
 }
@@ -293,7 +362,7 @@ Result applyCommand(const Message &m) {
   return Result::Ok;
 }
 
-String gatewaySsid(uint64_t id, Preference mode);
+String gatewaySsid(uint64_t id, Preference mode, bool shortName = true);
 
 void processReceives() {
   Frame frame;
@@ -311,8 +380,11 @@ void processReceives() {
         Candidate candidate{sender, m.preference};
         election->scanned(&candidate, 1, millis());
         if (election->role() == Role::Member)
-          hotspot = gatewaySsid(sender, m.preference);
+          hotspot = gatewaySsid(sender, m.preference, m.beaconMetadataVersion == 2);
       }
+      if (!frame.advertisement && election->role() == Role::Member && sender == election->gateway() &&
+          (m.beaconMetadataVersion == 1 || m.beaconMetadataVersion == 2))
+        ledClock.synchronize(m.ledPhaseMs, frame.receivedLedPhase);
     } else if (m.kind == Kind::Reading && election->role() == Role::Gateway) {
       Node *node = findNode(sender, true);
       if (!node) continue;
@@ -363,8 +435,9 @@ void processCommands() {
 }
 
 void saveHomeCredentials() {
-  homeSsid = WiFi.SSID(); homePassword = WiFi.psk();
-  prefs.putString("ssid", homeSsid); prefs.putString("password", homePassword);
+  HomeCredentials credentials;
+  if (!makeHomeCredentials(WiFi.SSID(), WiFi.psk(), credentials) || !storeHomeCredentials(credentials))
+    Serial.println("Could not save home Wi-Fi credentials");
 }
 
 void stopPortal() {
@@ -372,13 +445,15 @@ void stopPortal() {
   if (wifiManager.getWebPortalActive()) wifiManager.stopWebPortal();
 }
 
-String gatewaySsid(uint64_t id, Preference mode) {
+String gatewaySsid(uint64_t id, Preference mode, bool shortName) {
+  if (shortName) return String(kit) + "-" + idText(id).substring(8);
   return "Scales-" + String(kit) + "-" + idText(id) + "-" +
          String(mode == Preference::PreferGateway ? 1 : 0);
 }
 
 void changeRole(Role role) {
   ledGateway.store(role == Role::Gateway);
+  if (role == Role::Gateway) ledClock.reset();
   Serial.printf("Network role=%u kit=%s gateway=%s\n", static_cast<unsigned>(role), kit,
                 idText(election->gateway()).c_str());
   if (mdnsActive) MDNS.end();
@@ -449,7 +524,7 @@ void processDiscovery() {
         Candidate candidate;
         String ssid = WiFi.SSID(i);
         bool matches = parseGateway(ssid, candidate);
-        if (ssid.startsWith("Scales-"))
+        if (ssid.startsWith("Scales-") || ssid.startsWith(String(kit) + "-"))
           Serial.printf("Discovery SSID=%s channel=%d RSSI=%d matches=%d\n",
                         ssid.c_str(), WiFi.channel(i), WiFi.RSSI(i), matches);
         if (matches && candidate.id != selfId) {
@@ -511,8 +586,8 @@ void processNetwork() {
     }
     bool connected = WiFi.status() == WL_CONNECTED;
     if (connected && !wasHomeConnected) {
-      Serial.printf("Home WiFi: http://%s/ | channel %d\n",
-                    WiFi.localIP().toString().c_str(), WiFi.channel());
+      Serial.printf("Home WiFi: http://%s/ | channel %d | BSSID %s | RSSI %d dBm\n",
+                    WiFi.localIP().toString().c_str(), WiFi.channel(), WiFi.BSSIDstr().c_str(), WiFi.RSSI());
     }
     wasHomeConnected = connected;
     if (!connected && homeSsid.length() && millis() - lastHomeRetry >= 30000) {
@@ -732,6 +807,84 @@ void handleConfigure() {
   accepted();
 }
 
+void relayHeartbeat();
+
+String encodeWifiField(const char *value) {
+  String encoded;
+  const char *hex = "0123456789ABCDEF";
+  for (const uint8_t *p = reinterpret_cast<const uint8_t *>(value); *p; ++p) {
+    uint8_t c = *p;
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == '~') encoded += static_cast<char>(c);
+    else { encoded += '%'; encoded += hex[c >> 4]; encoded += hex[c & 15]; }
+  }
+  return encoded;
+}
+
+void handleWifiCredentials() {
+  server().sendHeader("Cache-Control", "no-store");
+  // Only the current kit gateway can write a member's credentials.
+  if (election->role() != Role::Member || WiFi.status() != WL_CONNECTED ||
+      !(server().client().remoteIP() == WiFi.gatewayIP())) {
+    server().send(403, "application/json", "{\"error\":\"Only the current gateway can share Wi-Fi credentials\"}"); return;
+  }
+  HomeCredentials credentials;
+  if (server().arg("id") != idText(selfId) ||
+      !makeHomeCredentials(server().arg("ssid"), server().arg("password"), credentials)) {
+    server().send(400, "application/json", "{\"error\":\"Wrong scale or invalid Wi-Fi credentials\"}"); return;
+  }
+  if (!storeHomeCredentials(credentials)) {
+    server().send(500, "application/json", "{\"error\":\"Could not save Wi-Fi credentials\"}"); return;
+  }
+  server().send(200, "application/json", "{\"ok\":true,\"id\":\"" + idText(selfId) + "\"}");
+}
+
+void handleKitWifi() {
+  server().sendHeader("Cache-Control", "no-store");
+  if (election->role() != Role::Gateway || operation.active || restartAt) {
+    server().send(409, "application/json", "{\"error\":\"Use the current gateway and wait for other changes to finish\"}"); return;
+  }
+  HomeCredentials credentials;
+  String source = server().arg("source");
+  bool valid = source == "saved" ? makeHomeCredentials(homeSsid, homePassword, credentials) :
+               source == "manual" && makeHomeCredentials(server().arg("ssid"), server().arg("password"), credentials);
+  if (!valid) {
+    server().send(400, "application/json", "{\"error\":\"Choose a saved network or enter an SSID of 1-32 bytes and a valid Wi-Fi password\"}"); return;
+  }
+  Node *node = nullptr;
+  for (Node &candidate : nodes)
+    if (candidate.id && server().arg("id") == idText(candidate.id)) node = &candidate;
+  if (!node) { server().send(404, "application/json", "{\"error\":\"Unknown scale\"}"); return; }
+  if (node->id == selfId) {
+    bool saved = storeHomeCredentials(credentials);
+    server().send(saved ? 200 : 500, "application/json", saved ? "{\"ok\":true}" :
+                  "{\"error\":\"Could not save Wi-Fi credentials\"}"); return;
+  }
+  IPAddress ip(node->reading.ip), ap = WiFi.softAPIP(), mask = WiFi.softAPSubnetMask();
+  if (!node->reading.ip || ip == ap ||
+      (static_cast<uint32_t>(ip) & static_cast<uint32_t>(mask)) !=
+      (static_cast<uint32_t>(ap) & static_cast<uint32_t>(mask))) {
+    server().send(409, "application/json", "{\"error\":\"Scale needs a kit Wi-Fi IP; ESP-NOW alone cannot receive credentials\"}"); return;
+  }
+  String payload = "id=" + idText(node->id) + "&ssid=" + encodeWifiField(credentials.ssid) +
+                   "&password=" + encodeWifiField(credentials.password);
+  relayHeartbeat();
+  WiFiClient client;
+  HTTPClient request;
+  request.setConnectTimeout(1500); request.setTimeout(2000);
+  request.begin(client, "http://" + ip.toString() + "/wifi-credentials");
+  request.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  int status = request.POST(payload);
+  String response = status == 200 ? request.getString() : String("");
+  request.end();
+  relayHeartbeat();
+  String expected = "{\"ok\":true,\"id\":\"" + idText(node->id) + "\"}";
+  if (status == 200 && response == expected) server().send(200, "application/json", "{\"ok\":true}");
+  else server().send(502, "application/json", status == 404 ?
+    "{\"error\":\"Update this scale to firmware 1.2.11 or newer before sharing Wi-Fi\"}" :
+    "{\"error\":\"Scale did not confirm saving credentials; check its Wi-Fi connection and firmware\"}");
+}
+
 void handleSettings() {
   String html = "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<title>Scale settings</title><style>body{font:16px Arial;background:#111;color:#eee;max-width:640px;"
@@ -764,7 +917,7 @@ void handleSettings() {
     }
     html += "</fieldset></form>";
   }
-  html += "<p>Wi-Fi credentials are local to each board. Configure a board while it is the gateway. "
+  html += "<p>The gateway's Scale settings can share its home Wi-Fi with every scale. "
           "To change the whole kit code, update the other scales first and the gateway last. "
           "Member firmware uploads are relayed through this gateway; you can stay on your current Wi-Fi.</p><p id='status'></p>"
           "<script>document.querySelectorAll('form.scale-config').forEach(f=>f.onsubmit=async e=>{e.preventDefault();"
@@ -774,7 +927,13 @@ void handleSettings() {
           "let a=await r.json();if(!a.pending){let bad=a.results.filter(x=>!x.ok);if(bad.length)throw Error(bad.map(x=>x.message).join('; '));"
           "s.textContent='Saved. The scale is restarting; reconnect to the gateway if needed.';return}}throw Error('Timed out')"
           "}catch(e){s.textContent=e.message}})</script>";
-  if (election->role() == Role::Gateway) html += FPSTR(KIT_UPDATE);
+  if (election->role() == Role::Gateway) {
+    String sharing = FPSTR(KIT_WIFI);
+    HomeCredentials saved;
+    sharing.replace("%SAVED_OPTION%", makeHomeCredentials(homeSsid, homePassword, saved) ? "selected" : "disabled");
+    html += sharing;
+    html += FPSTR(KIT_UPDATE);
+  }
   server().sendHeader("Cache-Control", "no-store");
   server().send(200, "text/html", html);
 }
@@ -1038,6 +1197,8 @@ void registerRoutes() {
     server().send(200, "application/json", dataJson());
   });
   server().on("/settings", handleSettings);
+  server().on("/kit-wifi", HTTP_POST, handleKitWifi);
+  server().on("/wifi-credentials", HTTP_POST, handleWifiCredentials);
   server().on("/live.js", []() {
     server().sendHeader("Cache-Control", "no-store");
     server().send_P(200, "application/javascript", LIVE_UPDATES);
@@ -1064,13 +1225,29 @@ void registerRoutes() {
 }
 
 void updateStatusLed(TimerHandle_t) {
-  // The 100 ms software timer keeps blinking through blocking HTTP uploads.
-  static uint8_t phase = 0;
-  if (phase == 0) {
+  // Absolute phase avoids each board's independently started timer setting its rhythm.
+  uint16_t phase = ledClock.phase(esp_timer_get_time() / 1000);
+  static int previousPhase = -1;
+  static BatteryLed cycleBattery = BatteryLed::Off;
+  static uint32_t previousColor = 0xffffffffu;
+  if (previousPhase < 0 || phase < previousPhase) cycleBattery = ledBattery.load();
+  previousPhase = phase;
+  uint8_t red = 0, green = 0, blue = 0;
+  if (phase < (cycleBattery == BatteryLed::Off ? 100 : 200)) {
     bool gateway = ledGateway.load();
-    neopixelWrite(STATUS_RGB_PIN, 0, gateway ? 0 : 16, gateway ? 16 : 0);
-  } else if (phase == 1) neopixelWrite(STATUS_RGB_PIN, 0, 0, 0);
-  phase = (phase + 1) % 10;
+    bool wifiClient = gateway && WiFi.status() == WL_CONNECTED;
+    red = gateway && !wifiClient ? 16 : 0;
+    green = wifiClient ? 0 : 16;
+    blue = wifiClient ? 16 : 0;
+  } else if (cycleBattery != BatteryLed::Off && phase >= 500 && phase < 700) {
+    red = 16;
+    green = blue = cycleBattery == BatteryLed::Charging ? 16 : 0;
+  }
+  uint32_t color = (static_cast<uint32_t>(red) << 16) | (green << 8) | blue;
+  if (color != previousColor) {
+    neopixelWrite(STATUS_RGB_PIN, red, green, blue);
+    previousColor = color;
+  }
 }
 
 void loadConfiguration() {
@@ -1100,28 +1277,19 @@ void loadConfiguration() {
   }
   if (!std::isfinite(calibration)) calibration = 0;
   if (!std::isfinite(offset)) { offset = 0; haveOffset = false; }
-  homeSsid = prefs.getString("ssid", ""); homePassword = prefs.getString("password", "");
-  if (!prefs.isKey("ssid")) {
-    wifi_config_t saved{};
-    if (esp_wifi_get_config(WIFI_IF_STA, &saved) == ESP_OK && saved.sta.ssid[0]) {
-      char ssid[33]{}, password[65]{};
-      memcpy(ssid, saved.sta.ssid, 32); memcpy(password, saved.sta.password, 64);
-      homeSsid = ssid; homePassword = password;
-      prefs.putString("ssid", homeSsid); prefs.putString("password", homePassword);
-    }
-  }
+  loadHomeCredentials();
 }
 
 void setup() {
   Serial.begin(115200);
   neopixelWrite(STATUS_RGB_PIN, 0, 0, 0);
-  TimerHandle_t ledTimer = xTimerCreate("scale-led", pdMS_TO_TICKS(100), pdTRUE, nullptr, updateStatusLed);
+  TimerHandle_t ledTimer = xTimerCreate("scale-led", pdMS_TO_TICKS(10), pdTRUE, nullptr, updateStatusLed);
   if (!ledTimer || xTimerStart(ledTimer, 0) != pdPASS) Serial.println("Status LED timer failed to start");
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-    if (event == ARDUINO_EVENT_WIFI_STA_START) {
-      // Request 12 dBm in quarter-dBm units; log the driver's reported limit.
+    if (event == ARDUINO_EVENT_WIFI_STA_START || event == ARDUINO_EVENT_WIFI_AP_START) {
+      // Request 8.5 dBm for Wi-Fi and ESP-NOW on the shared radio.
       // The driver must be started before setting transmit power.
-      bool powerSet = esp_wifi_set_max_tx_power(12 * 4) == ESP_OK;
+      bool powerSet = WiFi.setTxPower(WIFI_POWER_8_5dBm);
       Serial.printf("Radio power set=%d actual=%.1f dBm\n", powerSet, static_cast<int>(WiFi.getTxPower()) / 4.0);
     } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
       Serial.printf("WiFi disconnected reason=%u\n", info.wifi_sta_disconnected.reason);
@@ -1136,6 +1304,8 @@ void setup() {
   pinMode(HX_DT, INPUT_PULLUP); // An unplugged DT should read not-ready, not float.
   channelChangedAt = millis();
   WiFi.mode(WIFI_STA);
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   loadConfiguration();
   WiFi.persistent(false); WiFi.setAutoReconnect(false);
   WiFi.disconnect(false, false); WiFi.setSleep(false);
@@ -1147,6 +1317,7 @@ void setup() {
     Serial.println("Cannot initialize scale network; restarting"); delay(2000); ESP.restart();
   }
   esp_now_register_recv_cb(onReceive); esp_now_register_send_cb(onSent);
+  esp_wifi_set_vendor_ie_cb(onGatewayAdvertisement, nullptr);
   wifiManager.setConfigPortalBlocking(false); wifiManager.setConfigPortalTimeout(0);
   wifiManager.setConnectTimeout(8); wifiManager.setSaveConnectTimeout(8);
   wifiManager.setDisableConfigPortal(false); wifiManager.setWiFiAutoReconnect(false);
@@ -1164,7 +1335,15 @@ void setup() {
   });
   wifiManager.setAPStaticIPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
   // WiFiManager disables an unconnected STA when starting its AP. ESP-NOW uses STA IDs.
-  wifiManager.setAPCallback([](WiFiManager *) { WiFi.enableSTA(true); WiFi.setSleep(false); });
+  wifiManager.setAPCallback([](WiFiManager *) {
+    WiFi.enableSTA(true); WiFi.setSleep(false);
+    GatewayAdvertisement advertisement;
+    WiFi.macAddress(advertisement.stationMac);
+    advertisement.message = message(Kind::Beacon);
+    esp_err_t beacon = esp_wifi_set_vendor_ie(true, WIFI_VND_IE_TYPE_BEACON, WIFI_VND_IE_ID_0, &advertisement);
+    esp_err_t probe = esp_wifi_set_vendor_ie(true, WIFI_VND_IE_TYPE_PROBE_RESP, WIFI_VND_IE_ID_0, &advertisement);
+    Serial.printf("Gateway discovery metadata beacon=%s probe=%s\n", esp_err_to_name(beacon), esp_err_to_name(probe));
+  });
   const char *menu[] = {"custom", "wifi", "info"}; wifiManager.setMenu(menu, 3);
   wifiManager.setCustomMenuHTML("<p><a href='/'><button>Open race scales</button></a></p>"
                                 "<p><a href='/settings'><button>Scale settings</button></a></p>"

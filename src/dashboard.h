@@ -340,7 +340,7 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
 
   <div class="weight lf">
     <div class="top">
-      <span class="corner-name" title="Red scale">LF<span class="corner-color"></span><span class="battery" id="lf_batt">Battery: --</span><span class="battery" id="lf_pct" title="Estimated usable charge: 3.73 V empty, 4.20 V full">--</span></span>
+      <span class="corner-name" title="Red scale">LF<span class="corner-color"></span><span class="battery" id="lf_batt">Battery: --</span><span class="battery" id="lf_pct" title="Estimated usable charge: 3.64 V empty, 4.20 V full">--</span></span>
       <span class="status" id="lf_status"></span>
     </div>
     <div class="value">
@@ -351,7 +351,7 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
 
   <div class="weight rf">
     <div class="top">
-      <span class="corner-name" title="Green scale">RF<span class="corner-color"></span><span class="battery" id="rf_batt">Battery: --</span><span class="battery" id="rf_pct" title="Estimated usable charge: 3.73 V empty, 4.20 V full">--</span></span>
+      <span class="corner-name" title="Green scale">RF<span class="corner-color"></span><span class="battery" id="rf_batt">Battery: --</span><span class="battery" id="rf_pct" title="Estimated usable charge: 3.64 V empty, 4.20 V full">--</span></span>
       <span class="status" id="rf_status"></span>
       </div>
       <div class="value">
@@ -362,7 +362,7 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
 
   <div class="weight lr">
     <div class="top">
-      <span class="corner-name" title="White scale">LR<span class="corner-color"></span><span class="battery" id="lr_batt">Battery: --</span><span class="battery" id="lr_pct" title="Estimated usable charge: 3.73 V empty, 4.20 V full">--</span></span>
+      <span class="corner-name" title="White scale">LR<span class="corner-color"></span><span class="battery" id="lr_batt">Battery: --</span><span class="battery" id="lr_pct" title="Estimated usable charge: 3.64 V empty, 4.20 V full">--</span></span>
       <span class="status" id="lr_status"></span>
       </div>
       <div class="value">
@@ -373,7 +373,7 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
 
   <div class="weight rr">
     <div class="top">
-      <span class="corner-name" title="Black scale">RR<span class="corner-color"></span><span class="battery" id="rr_batt">Battery: --</span><span class="battery" id="rr_pct" title="Estimated usable charge: 3.73 V empty, 4.20 V full">--</span></span>
+      <span class="corner-name" title="Black scale">RR<span class="corner-color"></span><span class="battery" id="rr_batt">Battery: --</span><span class="battery" id="rr_pct" title="Estimated usable charge: 3.64 V empty, 4.20 V full">--</span></span>
       <span class="status" id="rr_status"></span>
       </div>
       <div class="value">
@@ -468,6 +468,14 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
     <thead><tr><th>Scale</th><th>Firmware</th><th>Corner</th><th>Weight</th><th>Gain (counts/lb)</th><th>Zero offset (lb)</th><th>Status</th></tr></thead>
     <tbody id="node_list"></tbody>
   </table></div>
+  <div class="panel" id="led_guide" style="font-size:14px">
+    <strong>LED guide</strong>
+    <p><span style="color:#22c55e">Green</span>: Child/member ·
+       <span style="color:#60a5fa">Blue</span>: Parent/gateway connected to Wi-Fi ·
+       <span style="color:#facc15">Yellow</span>: Parent/gateway hosting its AP without a Wi-Fi association</p>
+    <p><span style="color:#fff">White</span>: Charging/USB power (above 4.5 V) ·
+       <span style="color:#ef4444">Red</span>: Low battery (under 20%). Battery pulse off otherwise.</p>
+  </div>
   <p id="page_links"><a href="/settings" style="color:#22c55e">Scale settings</a> ·
      <a href="/wifi" style="color:#22c55e">Wi-Fi setup</a> ·
      <a href="/diagnostics" style="color:#22c55e">HX711 diagnostics</a></p>
@@ -606,7 +614,7 @@ const char DASHBOARD[] PROGMEM = R"rawliteral(
   function batteryPercent(voltage){
     if(!Number.isFinite(voltage))return null
     // Approximate Li-ion discharge shape, rescaled to this kit's usable voltage window.
-    const curve=[[3.73,0],[3.80,20],[3.90,50],[4.00,75],[4.10,90],[4.20,100]]
+    const curve=[[3.64,0],[3.80,20],[3.90,50],[4.00,75],[4.10,90],[4.20,100]]
     if(voltage<=curve[0][0])return 0
     for(let i=1;i<curve.length;i++){
       const [v0,p0]=curve[i-1], [v1,p1]=curve[i]

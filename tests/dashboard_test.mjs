@@ -51,10 +51,10 @@ assert.equal(elements.rf_batt.textContent,'Battery: 3.72 V');
 assert.equal(elements.lr_batt.textContent,'Battery: --');
 assert.equal(elements.rr_batt.textContent,'Battery: --');
 assert.equal(elements.lf_pct.textContent,'~98%');
-assert.equal(elements.rf_pct.textContent,'~0%');
+assert.equal(elements.rf_pct.textContent,'~10%');
 assert.equal(elements.lr_pct.textContent,'--');
 assert.equal(elements.rr_pct.textContent,'--');
-for(const [voltage,expected] of [[3.73,0],[3.8,20],[3.85,35],[3.9,50],[4,75],[4.1,90],[4.2,100],[4.3,100]]){
+for(const [voltage,expected] of [[3.63,0],[3.64,0],[3.65,1],[3.72,10],[3.73,11],[3.8,20],[3.85,35],[3.9,50],[4,75],[4.1,90],[4.2,100],[4.3,100]]){
   data.nodes[0].battery_voltage=voltage;render(data);
   assert.equal(elements.lf_pct.textContent,'~'+expected+'%');
 }

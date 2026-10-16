@@ -178,7 +178,7 @@ uses the ESP32 Update library to write and validate the inactive slot before
 selecting it for reboot. Stored calibration, corner, kit and Wi-Fi settings are
 retained. Diagnostics shows the firmware build time and current application slot.
 The firmware version is defined in `include/firmware_version.h` (currently
-`1.2.9`) and appears in live data, the scale list, settings and diagnostics.
+`1.2.20`) and appears in live data, the scale list, settings and diagnostics.
 Beacons/readings carry it in a field unused by older reading packets, preserving
 the 64-byte radio format and protocol version. Older boards display `unknown`
 until updated. Firmware version and radio protocol version are separate values.
@@ -204,7 +204,7 @@ Battery monitoring uses **GPIO3** and the onboard 2:1 divider.
 
 ### Battery operation
 
-The CPU runs at **160 MHz**, selected by `board_build.f_cpu = 160000000L` in
+The CPU runs at **80 MHz**, selected by `board_build.f_cpu = 80000000L` in
 `platformio.ini`. The diagnostics page reports the actual running CPU clock.
 120 MHz is rejected by the pinned Arduino core; 160 MHz is the next supported
 speed above it.
@@ -212,19 +212,35 @@ The ten-sample average, 250 ms ESP-NOW transmit interval, and 200 ms WebSocket
 update interval are unchanged. Set that configuration value to `240000000L`
 and rebuild/upload to compare operation at full CPU speed.
 
-Radio transmit power requests **12 dBm** when the Wi-Fi station driver starts.
-The request uses the quarter-dBm API because Arduino has no named 12 dBm enum.
-The SDK header describes discrete power steps, but the tested USB board reported
-a **12.0 dBm** configured limit. Serial diagnostics shows that driver readback;
-radiated output power has not been measured.
+Radio transmit power requests **8.5 dBm** when either the Wi-Fi station or AP
+starts. The limit applies to Wi-Fi and ESP-NOW on the shared radio.
+Firmware 1.2.19 leaves this setting in place for the user's battery test.
+Firmware 1.2.20 retains 8.5 dBm and scans all channels when connecting, ranking
+matching home-network APs by signal strength rather than stopping at the first
+SSID match. This selects an AP on connection; it does not add continuous roaming.
+Firmware 1.2.18 at 17 dBm connected to home Wi-Fi on USB power, but the user
+reported that it did not work on battery power.
+Firmware 1.2.16 previously restored 12 dBm after
+1.2.15 at 20 dBm showed failed discovery scans and home-network authentication
+timeouts on USB-connected scale A0F262F4BA28. The open hotspot is retained.
+At 12 dBm, that scale rejoined its saved home Wi-Fi at 192.168.10.215, completed
+a discovery scan, and its open hotspot appeared in a fresh Windows Wi-Fi scan.
+Its saved calibration and offset were verified unchanged. This does not measure
+maximum range or validate all four scales together.
+A subsequent 1.2.17 test requested and reported 18.5 dBm. Discovery scans completed,
+but initial home Wi-Fi authentication timed out and the hotspot was absent from a
+fresh Windows scan. The user reported a blue LED around the restore to 12 dBm;
+whether 18.5 dBm eventually connected was not established.
+Actual output remains subject to PHY, data-rate and country limits.
+Serial diagnostics shows the driver readback; radiated output has not been measured.
 This combination of CPU speed and power setting still needs hardware validation.
 
 Earlier testing on the Super Mini at 240 MHz found that the default 20 dBm
 produced authentication timeouts and failed
 ESP-NOW delivery acknowledgements even with scales 1–2 metres apart. At 8.5 dBm,
 the board joined the gateway hotspot and both scales exchanged readings with
-mDNS still enabled. This is a workaround for the observed radio behavior;
-the reason the default power setting fails and maximum usable range are unverified.
+mDNS still enabled. Firmware 1.2.15 restored maximum power at the user's request;
+the reason for those earlier failures and current maximum usable range are unverified.
 
 Earlier 80 MHz gateway validation with one HX711 and four simultaneous live views over 40 seconds
 kept the median update interval at 201 ms and sampled the ADC at 11.93 Hz, compared
@@ -255,8 +271,8 @@ number of browser clients; include idle hosting and active weighing in the test.
 1. Flash `S3-Mini` onto every board. Power one first and wait approximately
    6–10 seconds. It searches for an existing gateway, then hosts the kit if none
    is found. A single scale works on its own.
-2. Join its hotspot, named `Scales-SCALE-<device ID>-0`, with password `12345678`.
-   The exact name is printed on serial. A preferred gateway ends in `-1`.
+2. Join its open hotspot, named `<kit>-<last four device-ID digits>`, for example
+   `SCALE-BA28`; no password is required. The exact name is printed on serial.
 3. Open http://192.168.4.1 to use the dashboard. Choose **Wi-Fi setup** at the
    bottom of the page to optionally join a 2.4 GHz router.
 4. Power the other scales. They discover the gateway automatically and appear
@@ -267,6 +283,16 @@ number of browser clients; include idle hosting and active weighing in the test.
 6. With the scales unloaded, press **ZERO**. Put a known weight on each scale,
    press **CAL**, and enter its corner or device ID and the known weight.
    With one online scale, leave the corner/ID blank to select it.
+
+Firmware 1.2.15 uses an open kit hotspot. Update every module, including members;
+older firmware still requires the former hotspot password and cannot associate
+to the open AP. Saved home-network credentials are unchanged.
+Firmware 1.2.20 shortens the hotspot name and moves the full station ID and
+gateway preference into vendor metadata on Wi-Fi beacons/probe responses.
+Update all scales to 1.2.20 for discovery of the renamed hotspot. Updated boards
+still recognize older hotspot names and ESP-NOW beacons. ESP-NOW packets remain
+64 bytes; beacon metadata version 2 identifies the short hotspot name. Static
+Wi-Fi discovery metadata never adjusts the LED clock; live ESP-NOW beacons do.
 
 The dashboard is at http://192.168.4.1/ or `http://<gateway-home-IP>/`.
 The previous `/scales` URL remains an alias. Wi-Fi and scale settings links are
@@ -304,7 +330,7 @@ metadata marker, keeping the 64-byte radio packet compatible with older firmware
 
 Firmware 1.2.8 reads only **GPIO3**, averaging eight calibrated ADC readings once
 per second. First calculate **VBUS = 2 × GPIO3 voltage**. If VBUS is **4.5 V or
-lower**, add the measured **0.97 V** correction; above 4.5 V, display VBUS without
+lower**, add the measured **0.88 V** correction; above 4.5 V, display VBUS without
 the correction because USB bypasses the battery diode. Each corner shows **Battery: x.xx V** below
 its color bar. The API field is `battery_voltage`; GPIO1 is no longer sampled.
 Offline scales, duplicate corner assignments and older firmware without this
@@ -313,21 +339,39 @@ scale to 1.2.8. On USB power, the displayed value is the USB supply voltage rath
 than the cell's charging voltage; GPIO3 senses VBUS.
 The dashboard also estimates usable battery percentage below the voltage, entirely
 in the browser. A piecewise-linear approximation of a Li-ion discharge curve uses
-these voltage/percentage points: **3.73/0, 3.80/20, 3.90/50, 4.00/75, 4.10/90,
+these voltage/percentage points: **3.64/0, 3.80/20, 3.90/50, 4.00/75, 4.10/90,
 4.20/100**. This is a heuristic for the scale's usable range, not a measured profile
 of these cells or a fuel-gauge measurement. Values clamp to 0–100%, with `~` marking
 the estimate. Missing/offline/duplicate scales show `--`; readings above 4.5 V show
 `USB power` instead of a percentage. Only the gateway needs firmware 1.2.9 for this
 display, provided members already report battery voltage. Radio packets are unchanged.
 See [Adafruit's Li-ion/LiPo voltage profile](https://learn.adafruit.com/li-ion-and-lipoly-batteries/voltages)
-for the general discharge shape; the 3.73 V usable cutoff is specific to this kit.
+for the general discharge shape; the 3.64 V usable cutoff is specific to this kit.
 The ADC uses 11 dB attenuation (see
 [Espressif ADC documentation](https://docs.espressif.com/projects/arduino-esp32/en/latest/api/adc.html)).
 
-The Super Mini's RGB LED on GPIO48 pulses for **100 ms every 1000 ms**: blue while
-hosting the kit Wi-Fi, green while a member or searching. A software timer drives
-the LED independently of HTTP uploads. GPIO48 matches the common Super Mini
+The Super Mini's RGB LED on GPIO48 repeats **100 ms network color, 900 ms off**
+when no battery indication is active. With a battery indication, it repeats
+**200 ms network color, 300 ms off, 200 ms battery color, 300 ms off**.
+The network pulse is green for a member or
+searching scale, blue for a gateway associated to a Wi-Fi network as a client,
+and yellow for a gateway hosting its AP without a Wi-Fi client association.
+The battery pulse is white when the reported voltage is above 4.5 V (USB/charging),
+red below 3.80 V (under 20% on the usable-charge curve), and off otherwise. No
+battery pulse is shown for 20–80% or above 80%; no intermediate color was specified.
+Before the first voltage sample, the battery pulse is off. The battery state is
+shared atomically with the software timer, so the LED keeps blinking independently
+of HTTP uploads. GPIO48 matches the common Super Mini
 [board example](https://github.com/hwthinker/ESP32S3-supermini#contoh-program-akses-led-ws2812-di-gpio48).
+The main dashboard includes this LED guide immediately above the bottom settings links.
+Firmware 1.2.12 synchronizes the start of each one-second LED cycle to the gateway's
+ESP-NOW beacons. Each scale retains its own status/battery colors and flash length.
+Beacons carry a phase stamped at transmission; members use the captured arrival
+time so delayed receive-queue processing does not shift the cycle. A 10 ms timer
+renders the absolute phase, with radio latency and timer scheduling limiting
+alignment precision. On lost beacons, the LED keeps running at the last offset;
+it re-aligns when a gateway is found. All boards, including the gateway, need
+1.2.12 for synchronization. Older firmware still exchanges normal 64-byte readings.
 
 ## Live web updates
 
@@ -412,7 +456,7 @@ and can host the dashboard. Gateway/member are temporary runtime roles.
 | Corner | Unassigned, LF, RF, LR, RR; independent of gateway role. |
 | Role preference | Auto, Prefer gateway, Scale only. |
 | Calibration | Offset and counts per pound, attached to the physical load cells. |
-| Home Wi-Fi | Local credentials entered through WiFiManager while that board is gateway. |
+| Home Wi-Fi | Configure through WiFiManager as gateway, or share a network with the kit from Scale settings. |
 
 Corner IDs remain 1=LF, 2=RF, 3=LR, 4=RR. Existing assignments and calibrations
 are preserved when upgrading from the previous labels. Dashboard/API field names
@@ -429,15 +473,32 @@ Hold **BOOT for three seconds while running** to restore Auto mode, kit `SCALE`,
 and an unassigned corner, then restart. Calibration and home Wi-Fi are retained.
 This recovers a board configured as Scale only when no gateway is available.
 
-### First-version limits
+### Sharing home Wi-Fi
 
-Wi-Fi credentials are **not copied between boards**. For home-network access
-following an arbitrary gateway change, power each board alone once and configure
-its router credentials. A replacement gateway without credentials still offers
-its hotspot and weighing dashboard. Gateway changes can also change the home IP.
+On the gateway, open **Scale settings → Share Wi-Fi with all scales**. The default
+uses the gateway's saved home-network SSID/password without sending the password
+back to the browser. If none are available, enter an SSID and password; leave the
+password blank for an open network. The page visits members first and the gateway
+last, reports each result, and continues after individual failures. Scale-only
+members are included. Every target needs firmware **1.2.11+** and a kit Wi-Fi IP;
+ESP-NOW-only and offline scales are reported as failures, not silently skipped.
+
+The gateway forwards URL-encoded credentials over the existing kit Wi-Fi HTTP
+connection. The member accepts writes only from its current gateway IP and only
+when the requested device ID matches its own. Its reply confirms that same ID.
+SSID/password are committed together in a single NVS blob; prior saved settings
+remain readable. Passwords are not returned in responses or printed in serial logs.
+Saving does not reboot or disconnect scales. Members keep using the kit AP, and
+the shared home network is used on their next gateway connection. A connected
+gateway stays on its current network until reconnecting or restarting.
+
+### Connection limits
+
+A replacement gateway without saved credentials still offers its hotspot and
+weighing dashboard. Gateway changes can also change the home IP.
 
 This version uses a stored kit code rather than a pairing/enrollment window.
-Secure enrollment and encrypted credential distribution are not implemented.
+Secure enrollment and credential distribution over ESP-NOW are not implemented.
 Wi-Fi scans and connection attempts can briefly interrupt radio delivery, and
 saving Wi-Fi credentials can pause processing for the connection timeout.
 
@@ -472,6 +533,10 @@ and duplicate command handling. Relay tests compile the production handlers with
 controlled transports to check target identity, multipart framing, partial writes,
 invalid/incomplete files, remote failures and cancellation.
 LED tests exercise pulse duration, repeat interval and gateway/member colors.
+Clock tests cover different boot times, delayed receive processing, lost beacons,
+gateway changes and timer rollover.
+Wi-Fi sharing tests cover saved/manual credentials, validation, atomic storage,
+legacy migration, matching device identity, Scale-only members and partial failures.
 
 With Node.js installed, test browser reconnect and stale-update handling:
 
@@ -479,6 +544,7 @@ With Node.js installed, test browser reconnect and stale-update handling:
 node tests/live_updates_test.mjs
 node tests/dashboard_test.mjs
 node tests/kit_update_test.mjs
+node tests/kit_wifi_test.mjs
 ```
 
 Hardware acceptance checks still require multiple boards: boot all four together,

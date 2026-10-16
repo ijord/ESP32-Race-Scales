@@ -22,8 +22,12 @@ led = source.split("void updateStatusLed(TimerHandle_t)", 1)[1].split("void load
 (output / "status_led_function.h").write_text("void updateStatusLed(TimerHandle_t)" + led, encoding="utf-8")
 battery = source.split("void updateBatteryVoltage()", 1)[1].split("void updateLocalReading()", 1)[0]
 (output / "battery_voltage_function.h").write_text("void updateBatteryVoltage()" + battery, encoding="utf-8")
+helpers = "bool makeHomeCredentials(" + source.split("bool makeHomeCredentials(", 1)[1].split("void updateBatteryVoltage()", 1)[0]
+handlers = "String encodeWifiField(" + source.split("String encodeWifiField(", 1)[1].split("void handleSettings()", 1)[0]
+(output / "wifi_credentials_functions.h").write_text(helpers + handlers, encoding="utf-8")
 for source_name, name in (("network_tests", "network_tests"), ("member_update_test", "relay_tests"),
-                          ("status_led_test", "status_led_test"), ("battery_voltage_test", "battery_voltage_test")):
+                          ("status_led_test", "status_led_test"), ("battery_voltage_test", "battery_voltage_test"),
+                          ("wifi_credentials_test", "wifi_credentials_test"), ("led_clock_test", "led_clock_test")):
     binary = output / (name + (".exe" if os.name == "nt" else ""))
     subprocess.run([str(compiler), "-std=c++11", "-Wall", "-Wextra", "-Werror",
                     "-I", str(root / "include"), "-I", str(output),

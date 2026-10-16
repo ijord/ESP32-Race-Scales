@@ -1,4 +1,5 @@
 #include "scale_network.h"
+#include "gateway_advertisement.h"
 #include "firmware_version.h"
 #include <cassert>
 #include <cstdio>
@@ -129,6 +130,40 @@ void protocolTests() {
   m.result = static_cast<Result>(6); assert(!valid());
   assert(validKit("RACE") && validKit("12345678"));
   assert(!validKit("") && !validKit("lower") && !validKit("AB-CD"));
+  m.kind=Kind::Beacon;m.result=Result::Ok;m.beaconMetadataVersion=0;m.ledPhaseMs=0;
+  assert(valid()); // Legacy beacon remains valid without a sync marker.
+  static_assert(offsetof(Message,ledPhaseMs)==offsetof(Message,requesterBoot),"LED phase wire offset");
+  m.beaconMetadataVersion=1;m.ledPhaseMs=999;
+  assert(valid() && decoded.ledPhaseMs==999 && decoded.beaconMetadataVersion==1);
+  m.ledPhaseMs=1000;assert(!valid());
+  m.ledPhaseMs=0;assert(valid());
+  m.beaconMetadataVersion=2;m.ledPhaseMs=999;assert(valid());
+  m.ledPhaseMs=1000;assert(!valid());m.ledPhaseMs=0;
+
+  GatewayAdvertisement advertisement, received;
+  const uint8_t mac[6]={0xa0,0xf2,0x62,0xf4,0xba,0x28};
+  std::memcpy(advertisement.stationMac,mac,sizeof(mac));
+  advertisement.message=m;
+  advertisement.message.preference=Preference::PreferGateway;
+  auto advertised=[&]() {return decodeGatewayAdvertisement(reinterpret_cast<const uint8_t *>(&advertisement),
+                                                           sizeof(advertisement),received);};
+  assert(advertised());
+  assert(!std::memcmp(received.stationMac,mac,sizeof(mac)));
+  assert(received.message.preference==Preference::PreferGateway && !std::strcmp(received.message.kit,"RACE"));
+  assert(!decodeGatewayAdvertisement(nullptr,sizeof(advertisement),received));
+  assert(!decodeGatewayAdvertisement(reinterpret_cast<const uint8_t *>(&advertisement),sizeof(advertisement)-1,received));
+  advertisement.header[1]--;assert(!advertised());advertisement.header[1]++;
+  advertisement.header[5]++;assert(!advertised());advertisement.header[5]--;
+  advertisement.stationMac[0]|=1;assert(!advertised());advertisement.stationMac[0]&=~1;
+  std::memset(advertisement.stationMac,0,6);assert(!advertised());
+  std::memcpy(advertisement.stationMac,mac,6);
+  advertisement.message.kind=Kind::Reading;assert(!advertised());
+  advertisement.message.kind=Kind::Beacon;
+  advertisement.message.preference=Preference::ScaleOnly;assert(!advertised());
+  advertisement.message.preference=Preference::PreferGateway;
+  advertisement.message.beaconMetadataVersion=1;assert(!advertised());
+  advertisement.message.beaconMetadataVersion=2;
+  advertisement.message.ledPhaseMs=1000;assert(!advertised());
 }
 
 void commandTests() {
